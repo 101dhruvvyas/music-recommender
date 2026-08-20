@@ -8,43 +8,43 @@ import streamlit as st
 import warnings
 warnings.filterwarnings('ignore')
 
-# ── Page config ───────────────────────────────────────────────────
 st.set_page_config(
     page_title="Music Genre Recommender",
     page_icon="🎵",
     layout="centered"
 )
 
-# ── Load and train model ──────────────────────────────────────────
 @st.cache_resource(show_spinner=False)
 def load_and_train():
     url = "https://huggingface.co/datasets/maharshipandya/spotify-tracks-dataset/resolve/main/dataset.csv"
 
-    df = pd.read_csv(url, low_memory=False)
-
-    # Normalize column names
-    df.columns = df.columns.str.strip().str.lower()
-
-    # Required columns
-    required = [
-        'track_id', 'track_genre', 'track_name', 'artists', 'popularity',
+    # Only load the columns we actually need — saves significant memory
+    usecols = [
+        'track_id', 'track_name', 'artists', 'track_genre', 'popularity',
         'danceability', 'energy', 'valence', 'tempo',
         'acousticness', 'instrumentalness', 'speechiness',
         'liveness', 'loudness', 'mode', 'explicit'
     ]
-    for col in required:
-        if col not in df.columns:
-            raise ValueError(f"Missing column: {col}")
 
+    df = pd.read_csv(url, usecols=usecols, low_memory=False)
+    df.columns = df.columns.str.strip().str.lower()
     df = df.drop_duplicates(subset=['track_id'])
-    df = df.dropna(subset=required)
+    df = df.dropna()
 
-    # Fix types explicitly
+    # Fix types
     df['explicit'] = df['explicit'].astype(str).str.strip().str.lower()
-    df['explicit'] = df['explicit'].map({'true': 1, 'false': 0, '1': 1, '0': 0}).fillna(0).astype(int)
-    df['popularity'] = pd.to_numeric(df['popularity'], errors='coerce').fillna(0).astype(float)
-    df['tempo'] = pd.to_numeric(df['tempo'], errors='coerce').fillna(120.0).astype(float)
-    df['mode'] = pd.to_numeric(df['mode'], errors='coerce').fillna(0).astype(int)
+    df['explicit'] = df['explicit'].map(
+        {'true': 1, 'false': 0, '1': 1, '0': 0}
+    ).fillna(0).astype(np.int8)
+
+    df['mode'] = pd.to_numeric(df['mode'], errors='coerce').fillna(0).astype(np.int8)
+    df['popularity'] = pd.to_numeric(df['popularity'], errors='coerce').fillna(0).astype(np.float32)
+    df['tempo'] = pd.to_numeric(df['tempo'], errors='coerce').fillna(120.0).astype(np.float32)
+
+    FLOAT_COLS = ['danceability', 'energy', 'valence', 'acousticness',
+                  'instrumentalness', 'speechiness', 'liveness', 'loudness']
+    for col in FLOAT_COLS:
+        df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0).astype(np.float32)
 
     FEATURES = [
         'danceability', 'energy', 'valence', 'tempo',
@@ -52,24 +52,23 @@ def load_and_train():
         'liveness', 'loudness', 'mode', 'explicit', 'popularity'
     ]
 
-    for f in FEATURES:
-        df[f] = pd.to_numeric(df[f], errors='coerce').fillna(0.0)
-
-    X = df[FEATURES].astype(float)
+    X = df[FEATURES].astype(np.float32)
     y = df['track_genre'].astype(str)
 
     le = LabelEncoder()
     y_encoded = le.fit_transform(y)
 
+    # Use only 30% of data for training to stay within memory limits
     X_train, X_test, y_train, y_test = train_test_split(
-        X, y_encoded, test_size=0.2, random_state=42
+        X, y_encoded, test_size=0.7, random_state=42
     )
 
+    # Smaller forest to reduce memory
     model = RandomForestClassifier(
-        n_estimators=100,
-        max_depth=20,
+        n_estimators=50,
+        max_depth=15,
         random_state=42,
-        n_jobs=-1
+        n_jobs=1  # single core to avoid memory spikes
     )
     model.fit(X_train, y_train)
 
@@ -87,70 +86,44 @@ def get_example_tracks(df, genre, n=3):
 
 # ── UI ────────────────────────────────────────────────────────────
 st.title("🎵 Music Genre Recommender")
-st.caption("Tell us what kind of music you're in the mood for and we'll recommend the perfect genre — powered by 114,000 real Spotify tracks.")
+st.caption("Tell us what kind of music you're in the mood for — powered by 114,000 real Spotify tracks.")
 
 try:
-    with st.spinner("Loading 114,000 Spotify tracks and training model... this takes about 60 seconds on first load."):
+    with st.spinner("Loading dataset and training model... about 60 seconds on first load."):
         model, le, df, FEATURES, accuracy = load_and_train()
-    st.success(f"Model ready. Trained on {len(df):,} tracks across {df['track_genre'].nunique()} genres. Test accuracy: {accuracy:.1%}")
+    st.success(f"Model ready. {len(df):,} tracks, {df['track_genre'].nunique()} genres. Accuracy: {accuracy:.1%}")
 except Exception as e:
-    st.error(f"Failed to load model: {e}")
+    st.error(f"Error loading model: {e}")
     st.stop()
 
 st.divider()
 
-# ── User inputs ───────────────────────────────────────────────────
 st.subheader("🎛️ What are you in the mood for?")
 st.caption("Drag the sliders to describe the music you want right now.")
 
 col1, col2 = st.columns(2)
 
 with col1:
-    danceability = st.slider(
-        "💃 Danceability",
-        min_value=0.0, max_value=1.0, value=0.5, step=0.01,
-        help="0 = not for dancing, 1 = pure dance floor"
-    )
-    energy = st.slider(
-        "⚡ Energy",
-        min_value=0.0, max_value=1.0, value=0.5, step=0.01,
-        help="0 = calm and quiet, 1 = intense and loud"
-    )
-    valence = st.slider(
-        "😊 Mood",
-        min_value=0.0, max_value=1.0, value=0.5, step=0.01,
-        help="0 = sad or dark, 1 = happy and euphoric"
-    )
-    acousticness = st.slider(
-        "🎸 Acoustic vs Electronic",
-        min_value=0.0, max_value=1.0, value=0.5, step=0.01,
-        help="0 = fully electronic, 1 = fully acoustic"
-    )
+    danceability = st.slider("💃 Danceability", 0.0, 1.0, 0.5, 0.01,
+        help="0 = not for dancing, 1 = pure dance floor")
+    energy = st.slider("⚡ Energy", 0.0, 1.0, 0.5, 0.01,
+        help="0 = calm and quiet, 1 = intense and loud")
+    valence = st.slider("😊 Mood", 0.0, 1.0, 0.5, 0.01,
+        help="0 = sad or dark, 1 = happy and euphoric")
+    acousticness = st.slider("🎸 Acoustic vs Electronic", 0.0, 1.0, 0.5, 0.01,
+        help="0 = fully electronic, 1 = fully acoustic")
 
 with col2:
-    instrumentalness = st.slider(
-        "🎹 Instrumentalness",
-        min_value=0.0, max_value=1.0, value=0.1, step=0.01,
-        help="0 = lots of vocals, 1 = mostly instrumental"
-    )
-    tempo = st.slider(
-        "🥁 Tempo (BPM)",
-        min_value=40, max_value=220, value=120, step=1,
-        help="60 = slow ballad, 120 = pop, 160 = fast EDM"
-    )
-    popularity = st.slider(
-        "📈 Popularity",
-        min_value=0, max_value=100, value=50, step=1,
-        help="0 = underground deep cuts, 100 = mainstream chart-toppers"
-    )
-    explicit = st.selectbox(
-        "🔞 Explicit content",
-        options=[0, 1],
-        format_func=lambda x: "No explicit content" if x == 0 else "Explicit content okay",
-        index=0
-    )
+    instrumentalness = st.slider("🎹 Instrumentalness", 0.0, 1.0, 0.1, 0.01,
+        help="0 = lots of vocals, 1 = mostly instrumental")
+    tempo = st.slider("🥁 Tempo (BPM)", 40, 220, 120, 1,
+        help="60 = slow ballad, 120 = pop, 160 = fast EDM")
+    popularity = st.slider("📈 Popularity", 0, 100, 50, 1,
+        help="0 = underground, 100 = mainstream chart-toppers")
+    explicit = st.selectbox("🔞 Explicit content", options=[0, 1],
+        format_func=lambda x: "No explicit content" if x == 0 else "Explicit okay",
+        index=0)
 
-# Infer remaining features
 speechiness = 0.3 if danceability > 0.6 else 0.05
 liveness = 0.15
 loudness = -5.0 + (energy * 10)
