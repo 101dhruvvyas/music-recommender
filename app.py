@@ -15,21 +15,36 @@ st.set_page_config(
     layout="centered"
 )
 
-# ── Load and train model (cached so it only runs once) ────────────
+# ── Load and train model ──────────────────────────────────────────
 @st.cache_resource(show_spinner=False)
 def load_and_train():
     url = "https://huggingface.co/datasets/maharshipandya/spotify-tracks-dataset/resolve/main/dataset.csv"
-    df = pd.read_csv(url)
 
+    df = pd.read_csv(url, low_memory=False)
+
+    # Normalize column names
     df.columns = df.columns.str.strip().str.lower()
+
+    # Required columns
+    required = [
+        'track_id', 'track_genre', 'track_name', 'artists', 'popularity',
+        'danceability', 'energy', 'valence', 'tempo',
+        'acousticness', 'instrumentalness', 'speechiness',
+        'liveness', 'loudness', 'mode', 'explicit'
+    ]
+    for col in required:
+        if col not in df.columns:
+            raise ValueError(f"Missing column: {col}")
+
     df = df.drop_duplicates(subset=['track_id'])
-    df = df.dropna(subset=[
-        'track_genre', 'danceability', 'energy', 'valence',
-        'tempo', 'acousticness', 'instrumentalness',
-        'speechiness', 'liveness', 'loudness', 'mode',
-        'explicit', 'popularity'
-    ])
-    df['explicit'] = df['explicit'].astype(int)
+    df = df.dropna(subset=required)
+
+    # Fix types explicitly
+    df['explicit'] = df['explicit'].astype(str).str.strip().str.lower()
+    df['explicit'] = df['explicit'].map({'true': 1, 'false': 0, '1': 1, '0': 0}).fillna(0).astype(int)
+    df['popularity'] = pd.to_numeric(df['popularity'], errors='coerce').fillna(0).astype(float)
+    df['tempo'] = pd.to_numeric(df['tempo'], errors='coerce').fillna(120.0).astype(float)
+    df['mode'] = pd.to_numeric(df['mode'], errors='coerce').fillna(0).astype(int)
 
     FEATURES = [
         'danceability', 'energy', 'valence', 'tempo',
@@ -37,8 +52,11 @@ def load_and_train():
         'liveness', 'loudness', 'mode', 'explicit', 'popularity'
     ]
 
-    X = df[FEATURES]
-    y = df['track_genre']
+    for f in FEATURES:
+        df[f] = pd.to_numeric(df[f], errors='coerce').fillna(0.0)
+
+    X = df[FEATURES].astype(float)
+    y = df['track_genre'].astype(str)
 
     le = LabelEncoder()
     y_encoded = le.fit_transform(y)
@@ -71,10 +89,14 @@ def get_example_tracks(df, genre, n=3):
 st.title("🎵 Music Genre Recommender")
 st.caption("Tell us what kind of music you're in the mood for and we'll recommend the perfect genre — powered by 114,000 real Spotify tracks.")
 
-with st.spinner("Loading 114,000 Spotify tracks and training model... this takes about 30 seconds on first load."):
-    model, le, df, FEATURES, accuracy = load_and_train()
+try:
+    with st.spinner("Loading 114,000 Spotify tracks and training model... this takes about 60 seconds on first load."):
+        model, le, df, FEATURES, accuracy = load_and_train()
+    st.success(f"Model ready. Trained on {len(df):,} tracks across {df['track_genre'].nunique()} genres. Test accuracy: {accuracy:.1%}")
+except Exception as e:
+    st.error(f"Failed to load model: {e}")
+    st.stop()
 
-st.success(f"Model ready. Trained on {len(df):,} tracks across {df['track_genre'].nunique()} genres. Test accuracy: {accuracy:.1%}")
 st.divider()
 
 # ── User inputs ───────────────────────────────────────────────────
@@ -128,20 +150,19 @@ with col2:
         index=0
     )
 
-# Infer remaining features from user inputs
+# Infer remaining features
 speechiness = 0.3 if danceability > 0.6 else 0.05
 liveness = 0.15
 loudness = -5.0 + (energy * 10)
 mode = 1 if valence > 0.5 else 0
 
-# ── Predict ───────────────────────────────────────────────────────
 st.divider()
 
 if st.button("🎧 Get My Genre Recommendations", use_container_width=True):
     user_input = pd.DataFrame([[
-        danceability, energy, valence, float(tempo),
-        acousticness, instrumentalness, speechiness,
-        liveness, loudness, mode, explicit, float(popularity)
+        float(danceability), float(energy), float(valence), float(tempo),
+        float(acousticness), float(instrumentalness), float(speechiness),
+        float(liveness), float(loudness), int(mode), int(explicit), float(popularity)
     ]], columns=FEATURES)
 
     probabilities = model.predict_proba(user_input)[0]
