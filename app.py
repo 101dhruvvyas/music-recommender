@@ -91,7 +91,7 @@ st.caption("Tell us what kind of music you're in the mood for — powered by 114
 try:
     with st.spinner("Loading dataset and training model... about 60 seconds on first load."):
         model, le, df, FEATURES, accuracy = load_and_train()
-    st.success(f"Model ready. {len(df):,} tracks, {df['track_genre'].nunique()} genres. Accuracy: {accuracy:.1%}")
+    st.success(f"Model ready. Trained on {len(df):,} tracks across {df['track_genre'].nunique()} genres.")
 except Exception as e:
     st.error(f"Error loading model: {e}")
     st.stop()
